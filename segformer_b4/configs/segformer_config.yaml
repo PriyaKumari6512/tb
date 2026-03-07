@@ -1,0 +1,55 @@
+# SegFormer B4 Segmentation Config
+# From-scratch implementation (no HuggingFace)
+
+model:
+  variant: "b4"                     # b0|b1|b2|b3|b4|b5
+  num_classes: 2                    # background + bacilli
+  drop_path_rate: 0.1
+  pretrained_weights: null          # Path to pretrained MiT-B4 encoder weights
+
+data:
+  data_root: "${DATA_ROOT:./DDS3}"
+  image_size: 512
+  batch_size: 8
+  num_workers: 4
+  train_subfolders:
+    - "100% NEGATIVE"
+    - "90% NEGATIVE"
+    - "50% NEGATIVE"
+  val_subfolders:
+    - "50% NEGATIVE"
+  test_subfolders:
+    - "50% NEGATIVE"
+  subfolder_weights:
+    "100% NEGATIVE": 0.5
+    "90% NEGATIVE": 1.0
+    "50% NEGATIVE": 1.5
+
+training:
+  epochs: 100
+  lr: 6.0e-5
+  encoder_lr_mult: 0.1
+  weight_decay: 0.01
+  warmup_epochs: 5
+  grad_clip: 1.0
+  patience: 20
+  save_every: 10
+  amp: true
+  multi_gpu: true
+  loss:
+    type: "dice_bce"
+    dice_weight: 1.0
+    bce_weight: 0.5
+    pos_weight: 5.0
+
+postprocess:
+  conf_threshold: 0.5
+  min_area: 10
+  connectivity: 2
+
+inference:
+  output_dir: "${OUTPUT_DIR:./outputs/segformer}"
+
+seed: 42
+ckpt_dir: "${CKPT_DIR:./checkpoints}"
+log_dir: "${LOG_DIR:./logs}"

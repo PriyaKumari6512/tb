@@ -1,0 +1,49 @@
+# Full Pipeline Configuration
+# Paths are relative to the pipeline working directory
+
+# ── Input ──
+input:
+  dataset_dir: "/Users/priyakumari/Desktop/t24157_backup/testingDataset"
+  categories:
+    - "Positive"
+    - "Negative"
+  image_extensions: [".jpg", ".jpeg", ".png", ".bmp", ".tif"]
+
+# ── Super-Resolution (SwinIR) ──
+sr:
+  checkpoint: "/Users/priyakumari/Desktop/t24157_backup/tb_bacilli_pipeline/checkpoints/sr_best.pth"
+  output_suffix: "_SR"   # testingDataset → testingDataset_SR
+  model:
+    img_channels: 3
+    embed_dim: 180
+    depths: [6, 6, 6, 6, 6, 6, 6, 6]
+    num_heads: [6, 6, 6, 6, 6, 6, 6, 6]
+    window_size: 8
+    mlp_ratio: 2.0
+    upscale: 4
+    resi_connection: "1conv"
+  # Use tiled inference for large images (2448×2048)
+  tiled: true
+  tile_size: 256
+  tile_overlap: 32
+  output_format: "png"
+
+# ── Segmentation (SegFormer B4) ──
+segmentation:
+  checkpoint: "/Users/priyakumari/Desktop/t24157_backup/segformer_b4/checkpoints/segformer_best.pth"
+  model:
+    variant: "b4"
+    num_classes: 2
+  image_size: 512
+  threshold: 0.5
+  min_area: 10
+  connectivity: 2
+
+# ── Output ──
+output:
+  base_dir: "/Users/priyakumari/Desktop/t24157_backup/full_pipeline/pipeline_outputs"
+  save_sr_images: true
+  save_masks: true
+  save_overlays: true
+  results_filename: "pipeline_results.json"
+  summary_filename: "pipeline_summary.json"

@@ -1,0 +1,68 @@
+# =============================================================================
+# TB Bacilli Segmentation (SegFormer) Configuration
+# =============================================================================
+
+data:
+  root: "${DATA_ROOT:./DDS3}"
+  train_subfolders:
+    - "TRAINING SET/100% NEGATIVE"
+    - "TRAINING SET/90% NEGATIVE"
+    - "TRAINING SET/50% NEGATIVE"
+  val_subfolder: "VALIDATION SET/50% NEGATIVE"
+  test_subfolder: "TEST SET/50% NEGATIVE"
+  image_dir: "IMAGE"
+  mask_dir: "MASK"
+  extension: ".bmp"
+  image_size: 512
+  batch_size: 8
+  num_workers: 4
+  pin_memory: true
+
+model:
+  backbone: "nvidia/mit-b4"
+  num_classes: 2             # background + bacilli
+  pretrained: true
+
+training:
+  epochs: 100
+  lr: 6.0e-5
+  min_lr: 1.0e-7
+  weight_decay: 0.01
+  optimizer: "adamw"
+  betas: [0.9, 0.999]
+  scheduler: "cosine"
+  warmup_epochs: 3
+  amp: true
+  clip_grad: 1.0
+  multi_gpu: true
+  save_every: 5
+  patience: 20
+  seed: 42
+  loss:
+    type: "dice_bce"         # "dice_bce", "dice", "bce", "focal"
+    dice_weight: 1.0
+    bce_weight: 0.5
+    pos_weight: 5.0          # weight for bacilli class (handles imbalance)
+    smooth: 1.0
+
+checkpoint:
+  dir: "${CKPT_DIR:./checkpoints}/tb"
+  resume: null
+
+logging:
+  dir: "${LOG_DIR:./logs}/tb"
+  run_id: "auto"
+  tensorboard: true
+
+postprocess:
+  min_area: 10
+  connectivity: 2
+  conf_threshold: 0.5
+
+inference:
+  output_dir: "${OUTPUT_DIR:./outputs}/tb"
+  save_overlay: true
+  save_mask: true
+  overlay_alpha: 0.4
+  bbox_color: [0, 255, 0]
+  bbox_thickness: 2

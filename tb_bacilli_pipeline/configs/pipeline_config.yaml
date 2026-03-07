@@ -1,0 +1,31 @@
+# =============================================================================
+# Combined SR → TB Pipeline Configuration
+# =============================================================================
+
+sr:
+  config: "configs/sr_config.yaml"
+  checkpoint: "${CKPT_DIR:./checkpoints}/sr/best_model.pth"
+  enabled: true
+
+tb:
+  config: "configs/tb_config.yaml"
+  checkpoint: "${CKPT_DIR:./checkpoints}/tb/best_model.pth"
+
+data:
+  test_dir: "${DATA_ROOT:./DDS3}/TEST SET/50% NEGATIVE/IMAGE"
+  mask_dir: "${DATA_ROOT:./DDS3}/TEST SET/50% NEGATIVE/MASK"
+
+output:
+  dir: "experiments/"
+  save_overlays: true
+  save_masks: true
+  save_side_by_side: true
+
+comparison:
+  modes:
+    - "original"
+    - "sr_enhanced"
+  metrics:
+    - "bacilli_count"
+    - "dice"
+    - "iou"
