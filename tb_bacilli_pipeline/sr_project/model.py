@@ -310,6 +310,8 @@ class SwinIR(nn.Module):
 
     Args:
         img_channels: Number of input/output image channels (3 for RGB).
+        in_chans: Alias for img_channels (for compatibility).
+        img_size: Reference image size (stored as metadata, not used in architecture).
         embed_dim: Embedding dimension.
         depths: Number of STL layers in each RSTB.
         num_heads: Number of attention heads in each RSTB.
@@ -322,6 +324,8 @@ class SwinIR(nn.Module):
     def __init__(
         self,
         img_channels: int = 3,
+        in_chans: Optional[int] = None,
+        img_size: Optional[int] = None,
         embed_dim: int = 180,
         depths: List[int] = [6, 6, 6, 6, 6, 6, 6, 6],
         num_heads: List[int] = [6, 6, 6, 6, 6, 6, 6, 6],
@@ -331,6 +335,9 @@ class SwinIR(nn.Module):
         resi_connection: str = "1conv",
     ):
         super().__init__()
+        if in_chans is not None:
+            img_channels = in_chans
+        self.img_size = img_size
         self.window_size = window_size
         self.upscale = upscale
 
@@ -371,6 +378,41 @@ class SwinIR(nn.Module):
             if m.bias is not None:
                 nn.init.constant_(m.bias, 0)
 
+    def load_pretrained(self, path: str, strict: bool = False):
+        """Load pretrained weights for transfer learning.
+
+        Supports loading from:
+        - A full SwinIR checkpoint (with 'model_state_dict' key)
+        - A raw state_dict file
+        - Handles DataParallel 'module.' prefix removal
+        - Uses strict=False by default for flexible architecture matching
+
+        Args:
+            path: Path to pretrained weights checkpoint.
+            strict: Whether to require exact key matching.
+        """
+        state = torch.load(path, map_location="cpu", weights_only=False)
+        if "model_state_dict" in state:
+            state = state["model_state_dict"]
+        elif "state_dict" in state:
+            state = state["state_dict"]
+        elif "params" in state:
+            state = state["params"]
+        elif "params_ema" in state:
+            state = state["params_ema"]
+
+        # Handle DataParallel prefix
+        cleaned = {}
+        for k, v in state.items():
+            k = k.replace("module.", "")
+            cleaned[k] = v
+
+        missing, unexpected = self.load_state_dict(cleaned, strict=strict)
+        loaded = len(cleaned) - len(unexpected)
+        print(f"Loaded pretrained SwinIR: {loaded} keys loaded, "
+              f"{len(missing)} missing, {len(unexpected)} unexpected")
+        return missing, unexpected
+
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         B, C, H, W = x.shape
 
@@ -403,7 +445,7 @@ class SwinIR(nn.Module):
 
 
 def build_model(cfg: dict) -> SwinIR:
-    """Build SwinIR model from config."""
+    """Build SwinIR model from config, optionally loading pretrained weights."""
     mcfg = cfg["model"]
     model = SwinIR(
         img_channels=mcfg.get("img_channels", 3),
@@ -415,6 +457,12 @@ def build_model(cfg: dict) -> SwinIR:
         upscale=mcfg.get("upscale", 4),
         resi_connection=mcfg.get("resi_connection", "1conv"),
     )
+
+    # Transfer learning: load pretrained weights
+    pretrained = mcfg.get("pretrained_weights")
+    if pretrained:
+        model.load_pretrained(pretrained)
+
     n_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
     print(f"SwinIR model built — {n_params / 1e6:.2f}M trainable parameters")
     return model

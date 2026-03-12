@@ -75,7 +75,10 @@ def validate(model, val_loader, criterion, device):
 
         with autocast(device_type="cuda", enabled=device.type == "cuda"):
             logits = model(images)
-            loss = criterion(logits, masks)
+            # Extract class-1 logit for binary loss
+            binary_logits = logits[:, 1:2] - logits[:, 0:1]
+            binary_targets = masks.unsqueeze(1).float()
+            loss = criterion(binary_logits, binary_targets)
 
         # Dice on predictions
         probs = torch.softmax(logits, dim=1)
@@ -184,7 +187,10 @@ def train(cfg: dict, smoke_test: bool = False):
 
             with autocast(device_type="cuda", enabled=use_amp):
                 logits = model(images)
-                loss = criterion(logits, masks)
+                # Extract class-1 logit for binary loss
+                binary_logits = logits[:, 1:2] - logits[:, 0:1]
+                binary_targets = masks.unsqueeze(1).float()
+                loss = criterion(binary_logits, binary_targets)
 
             scaler.scale(loss).backward()
 
