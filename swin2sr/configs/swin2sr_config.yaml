@@ -1,0 +1,66 @@
+# =============================================================================
+# Swin2SR x4 Finetuning Configuration (DDS3 TB Microscopy Dataset)
+# =============================================================================
+
+data:
+  root: "${DATA_ROOT:./DDS3}"
+  train_subfolders:
+    - "TRAINING SET/100% NEGATIVE"
+    - "TRAINING SET/90% NEGATIVE"
+    - "TRAINING SET/50% NEGATIVE"
+  val_subfolder: "VALIDATION SET/50% NEGATIVE"
+  test_subfolder: "TEST SET/50% NEGATIVE"
+  image_dir: "IMAGE"
+  extension: ".bmp"
+  scale: 4
+  patch_size: 64          # HR crop size (LR will be patch_size/scale = 16)
+  batch_size: 16
+  num_workers: 4
+  pin_memory: true
+
+model:
+  pretrained: true                              # Use pretrained HuggingFace Swin2SR
+  model_name: "caidas/swin2SR-classical-sr-x4-64"  # Pretrained x4 classical SR model
+  upscale: 4
+  finetuned_weights: null                       # Path to finetuned checkpoint (optional)
+
+training:
+  epochs: 200
+  lr: 2.0e-4
+  min_lr: 1.0e-7
+  weight_decay: 0.0
+  optimizer: "adamw"
+  betas: [0.9, 0.99]
+  scheduler: "cosine"
+  warmup_epochs: 5
+  amp: true
+  clip_grad: 1.0
+  multi_gpu: true
+  save_every: 10
+  patience: 30
+  seed: 42
+  loss:
+    pixel: "l1"
+    perceptual: true
+    perceptual_weight: 0.1
+    perceptual_layers: ["relu1_2", "relu2_2", "relu3_4", "relu4_4"]
+    staged_finetuning:
+      stage1_epochs: 30        # L1 only
+      stage2_start: 31         # L1 + perceptual
+  encoder_lr_mult: 0.1         # LR multiplier for pretrained encoder
+  freeze_encoder_epochs: 5     # Freeze encoder for N initial epochs
+
+checkpoint:
+  dir: "${CKPT_DIR:./checkpoints}/swin2sr"
+  resume: null
+
+logging:
+  dir: "${LOG_DIR:./logs}/swin2sr"
+  run_id: "auto"
+  tensorboard: true
+
+inference:
+  tile_size: 256
+  tile_overlap: 32
+  output_dir: "${OUTPUT_DIR:./outputs}/swin2sr"
+  output_format: "png"
