@@ -136,6 +136,10 @@ class Swin2SRModel(nn.Module):
             f"Loaded finetuned Swin2SR: {loaded} keys loaded, "
             f"{len(missing)} missing, {len(unexpected)} unexpected"
         )
+        if missing:
+            logger.warning(f"Missing keys (first 5): {missing[:5]}")
+        if unexpected:
+            logger.warning(f"Unexpected keys (first 5): {unexpected[:5]}")
         return missing, unexpected
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:

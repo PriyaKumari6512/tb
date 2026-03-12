@@ -44,13 +44,12 @@ from swin2sr.utils import (
 
 logger = logging.getLogger(__name__)
 
-# Reconstruction head layer name patterns (not pretrained body).
-_HEAD_KEYWORDS = ("upsample", "conv_last", "final_convolution", "reconstruction")
+from swin2sr.model import Swin2SRModel
 
 
 def _is_head_param(name: str) -> bool:
     """Return True if parameter name belongs to the reconstruction head."""
-    return any(kw in name.lower() for kw in _HEAD_KEYWORDS)
+    return Swin2SRModel._is_head_param(name)
 
 
 # =============================================================================
@@ -266,6 +265,7 @@ def train(cfg: dict, smoke_test: bool = False):
                 logger.info(f"Epoch {epoch}: unfreezing encoder parameters")
 
         epoch_loss = 0.0
+        batch_idx = 0
         use_perceptual = perceptual_loss_fn is not None and epoch >= stage1_epochs
         t0 = time.time()
 

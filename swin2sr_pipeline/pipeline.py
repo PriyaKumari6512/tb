@@ -389,18 +389,21 @@ def run_pipeline(pipeline_cfg: dict):
         "",
         "Original Detection:",
         f"  Avg count:  {df['count_original'].mean():.1f}",
-        f"  Avg Dice:   {df['dice_original'].mean():.4f}" if mask_dir else "",
     ]
+    if mask_dir:
+        summary_lines.append(f"  Avg Dice:   {df['dice_original'].mean():.4f}")
     if sr_enabled:
         sr_counts = [r["count_sr"] for r in results if r["count_sr"] != "N/A"]
         summary_lines += [
             "",
             "SR-Enhanced Detection:",
-            f"  Avg count:  {np.mean(sr_counts):.1f}" if sr_counts else "",
         ]
+        if sr_counts:
+            summary_lines.append(f"  Avg count:  {np.mean(sr_counts):.1f}")
         if mask_dir:
             sr_dices = [r["dice_sr"] for r in results if r["dice_sr"] != "N/A"]
-            summary_lines.append(f"  Avg Dice:   {np.mean(sr_dices):.4f}" if sr_dices else "")
+            if sr_dices:
+                summary_lines.append(f"  Avg Dice:   {np.mean(sr_dices):.4f}")
 
     summary_text = "\n".join(summary_lines)
     logger.info("\n" + summary_text)
