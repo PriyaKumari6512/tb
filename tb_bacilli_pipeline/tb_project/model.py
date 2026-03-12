@@ -57,8 +57,11 @@ class TBSegFormer(nn.Module):
 
     @staticmethod
     def _get_local_config(backbone: str, num_classes: int) -> SegformerConfig:
-        """Create SegformerConfig locally without requiring network access."""
-        # Known SegFormer variant configurations
+        """Create SegformerConfig locally without requiring network access.
+
+        Architecture specs from SegFormer paper (Xie et al., NeurIPS 2021, Table 7)
+        and HuggingFace SegformerConfig defaults.
+        """
         variant_configs = {
             "nvidia/mit-b0": dict(
                 hidden_sizes=[32, 64, 160, 256], depths=[2, 2, 2, 2],

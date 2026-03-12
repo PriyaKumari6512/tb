@@ -39,6 +39,15 @@ from sr_project.utils import (
 
 logger = logging.getLogger(__name__)
 
+# Layer names for the reconstruction head (not pretrained).
+# All other parameters belong to the pretrained encoder body.
+_HEAD_LAYER_NAMES = ("upsample", "conv_last")
+
+
+def _is_head_param(name: str) -> bool:
+    """Return True if parameter name belongs to the reconstruction head."""
+    return any(n in name for n in _HEAD_LAYER_NAMES)
+
 
 # =============================================================================
 # Perceptual Loss (VGG-based)
@@ -175,7 +184,7 @@ def train(cfg: dict, smoke_test: bool = False):
         body_params = []
         head_params = []
         for name, param in model.named_parameters():
-            if "upsample" in name or "conv_last" in name:
+            if _is_head_param(name):
                 head_params.append(param)
             else:
                 body_params.append(param)
@@ -255,7 +264,7 @@ def train(cfg: dict, smoke_test: bool = False):
             base_model = model.module if hasattr(model, "module") else model
             freeze = epoch < freeze_encoder_epochs
             for name, param in base_model.named_parameters():
-                if "upsample" not in name and "conv_last" not in name:
+                if not _is_head_param(name):
                     param.requires_grad = not freeze
             if epoch == freeze_encoder_epochs:
                 logger.info(f"Epoch {epoch}: unfreezing encoder parameters")

@@ -13,6 +13,7 @@ Each RSTB (Residual Swin Transformer Block):
 STL uses window-based multi-head self-attention with shifted windows.
 """
 
+import logging
 import math
 from typing import List, Optional
 
@@ -20,6 +21,8 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from einops import rearrange
+
+logger = logging.getLogger(__name__)
 
 
 # =============================================================================
@@ -409,8 +412,8 @@ class SwinIR(nn.Module):
 
         missing, unexpected = self.load_state_dict(cleaned, strict=strict)
         loaded = len(cleaned) - len(unexpected)
-        print(f"Loaded pretrained SwinIR: {loaded} keys loaded, "
-              f"{len(missing)} missing, {len(unexpected)} unexpected")
+        logger.info(f"Loaded pretrained SwinIR: {loaded} keys loaded, "
+                     f"{len(missing)} missing, {len(unexpected)} unexpected")
         return missing, unexpected
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:

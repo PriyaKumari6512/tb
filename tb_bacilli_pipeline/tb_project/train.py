@@ -37,6 +37,22 @@ from tb_project.utils import (
 logger = logging.getLogger(__name__)
 
 
+def to_binary_logits(logits: torch.Tensor, masks: torch.Tensor):
+    """Convert 2-class logits to binary logits and targets for sigmoid-based loss.
+
+    Args:
+        logits: (B, 2, H, W) two-class logits from the model.
+        masks: (B, H, W) integer class labels.
+
+    Returns:
+        binary_logits: (B, 1, H, W) effective binary logit.
+        binary_targets: (B, 1, H, W) float targets.
+    """
+    binary_logits = logits[:, 1:2] - logits[:, 0:1]
+    binary_targets = masks.unsqueeze(1).float()
+    return binary_logits, binary_targets
+
+
 class CosineWarmupScheduler(torch.optim.lr_scheduler._LRScheduler):
     def __init__(self, optimizer, warmup_epochs, total_epochs, min_lr=1e-7, last_epoch=-1):
         self.warmup_epochs = warmup_epochs
@@ -75,9 +91,7 @@ def validate(model, val_loader, criterion, device):
 
         with autocast(device_type="cuda", enabled=device.type == "cuda"):
             logits = model(images)
-            # Extract class-1 logit for binary loss
-            binary_logits = logits[:, 1:2] - logits[:, 0:1]
-            binary_targets = masks.unsqueeze(1).float()
+            binary_logits, binary_targets = to_binary_logits(logits, masks)
             loss = criterion(binary_logits, binary_targets)
 
         # Dice on predictions
@@ -187,9 +201,7 @@ def train(cfg: dict, smoke_test: bool = False):
 
             with autocast(device_type="cuda", enabled=use_amp):
                 logits = model(images)
-                # Extract class-1 logit for binary loss
-                binary_logits = logits[:, 1:2] - logits[:, 0:1]
-                binary_targets = masks.unsqueeze(1).float()
+                binary_logits, binary_targets = to_binary_logits(logits, masks)
                 loss = criterion(binary_logits, binary_targets)
 
             scaler.scale(loss).backward()
