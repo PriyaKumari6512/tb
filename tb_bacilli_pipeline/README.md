@@ -235,6 +235,13 @@ Each experiment run gets a unique ID, config snapshot, and organized output dire
 - 2-class output (background + bacilli)
 - Post-processing: connected-component analysis for bacilli detection
 
+## Transfer Learning & Few-Shot Learning
+
+See [`TRANSFER_AND_FEW_SHOT_LEARNING.md`](../TRANSFER_AND_FEW_SHOT_LEARNING.md) for a
+detailed discussion of how transfer learning (already used in SegFormer) and few-shot
+learning (applicable for limited-label scenarios) can be applied and extended in this
+project.
+
 ## Monitoring
 
 Training logs are written to:
