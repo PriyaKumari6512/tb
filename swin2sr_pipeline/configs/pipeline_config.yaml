@@ -1,0 +1,25 @@
+# =============================================================================
+# Swin2SR → Segmentation Pipeline Configuration
+# =============================================================================
+# Full pipeline: Swin2SR super-resolution → SegFormer segmentation → bacilli counting
+
+data:
+  test_dir: "${DATA_ROOT:./DDS3}/TEST SET/50% NEGATIVE/IMAGE"
+  mask_dir: "${DATA_ROOT:./DDS3}/TEST SET/50% NEGATIVE/MASK"    # Set to null if no GT masks
+
+sr:
+  config: "swin2sr/configs/swin2sr_config.yaml"
+  checkpoint: "${CKPT_DIR:./checkpoints}/swin2sr/best_model.pth"
+  enabled: true
+
+segmentation:
+  config: "tb_bacilli_pipeline/configs/tb_config.yaml"
+  checkpoint: "${CKPT_DIR:./checkpoints}/tb/best_model.pth"
+
+output:
+  dir: "${OUTPUT_DIR:./outputs}/swin2sr_pipeline"
+  save_side_by_side: true
+
+comparison:
+  modes: ["original", "sr_enhanced"]
+  metrics: ["bacilli_count", "dice", "iou"]
