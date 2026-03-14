@@ -109,13 +109,16 @@ class SRDataset(Dataset):
             ps = self.patch_size
             lps = ps // self.scale
 
-            # Ensure image is large enough
+            # Ensure image is large enough for the requested patch size
             if h < ps or w < ps:
-                hr = cv2.resize(hr, (max(w, ps), max(h, ps)), interpolation=cv2.INTER_CUBIC)
+                new_h = max(h, ps)
+                new_w = max(w, ps)
+                hr = cv2.resize(hr, (new_w, new_h), interpolation=cv2.INTER_CUBIC)
                 h, w, _ = hr.shape
 
-            top = np.random.randint(0, max(1, h - ps + 1))
-            left = np.random.randint(0, max(1, w - ps + 1))
+            # Safe random crop — h >= ps and w >= ps is guaranteed after resize
+            top = np.random.randint(0, h - ps + 1) if h > ps else 0
+            left = np.random.randint(0, w - ps + 1) if w > ps else 0
             hr_patch = hr[top:top + ps, left:left + ps]
             lr_patch = cv2.resize(hr_patch, (lps, lps), interpolation=cv2.INTER_CUBIC)
 
