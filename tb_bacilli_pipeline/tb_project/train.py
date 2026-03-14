@@ -1,6 +1,6 @@
 """
 TB SegFormer Training with:
-  - Dice + BCE combined loss (handles class imbalance)
+  - FocalDice / Dice+BCE combined loss (handles class imbalance, reduces false positives)
   - WeightedRandomSampler (oversamples bacilli-rich images)
   - Mixed precision (AMP)
   - Multi-GPU (DataParallel)
@@ -37,6 +37,17 @@ from tb_project.utils import (
 logger = logging.getLogger(__name__)
 
 
+def to_binary_logits(logits: torch.Tensor) -> torch.Tensor:
+    """Convert (B, 2, H, W) 2-class logits to (B, 1, H, W) binary logit.
+
+    Uses log-ratio: log P(bacilli) - log P(background) which is the
+    log-odds for sigmoid-based losses.
+    """
+    if logits.shape[1] == 2:
+        return logits[:, 1:2] - logits[:, 0:1]
+    return logits  # already binary
+
+
 class CosineWarmupScheduler(torch.optim.lr_scheduler._LRScheduler):
     def __init__(self, optimizer, warmup_epochs, total_epochs, min_lr=1e-7, last_epoch=-1):
         self.warmup_epochs = warmup_epochs
@@ -62,27 +73,26 @@ class CosineWarmupScheduler(torch.optim.lr_scheduler._LRScheduler):
 
 @torch.no_grad()
 def validate(model, val_loader, criterion, device):
-    """Compute validation loss, Dice, IoU."""
+    """Compute validation loss and Dice score."""
     model.eval()
     total_loss = 0
     total_dice = 0
-    total_iou = 0
     count = 0
 
-    for batch in val_loader:
-        images = batch["image"].to(device)
-        masks = batch["mask"].to(device)
+    for images, masks in val_loader:
+        images = images.to(device)
+        masks = masks.to(device)
 
         with autocast(device_type="cuda", enabled=device.type == "cuda"):
             logits = model(images)
-            loss = criterion(logits, masks)
+            binary_logits = to_binary_logits(logits)
+            loss = criterion(binary_logits, masks)
 
-        # Dice on predictions
-        probs = torch.softmax(logits, dim=1)
-        preds = (probs[:, 1] > 0.5).long()
+        probs = torch.sigmoid(binary_logits)
+        preds = (probs > 0.5).long()
 
         for i in range(preds.shape[0]):
-            total_dice += float(dice_score(preds[i], masks[i]))
+            total_dice += float(dice_score(preds[i], masks[i].long()))
             count += 1
 
         total_loss += loss.item() * images.shape[0]
@@ -109,8 +119,8 @@ def train(cfg: dict, smoke_test: bool = False):
     with open(os.path.join(run_dir, "config.yaml"), "w") as f:
         yaml.dump(cfg, f, default_flow_style=False)
 
-    # Data
-    train_loader, val_loader, _ = build_dataloaders(cfg)
+    # Data — returns (train_loader, val_loader)
+    train_loader, val_loader = build_dataloaders(cfg)
 
     # Model
     model = build_model(cfg)
@@ -120,10 +130,10 @@ def train(cfg: dict, smoke_test: bool = False):
         logger.info(f"Using {torch.cuda.device_count()} GPUs with DataParallel")
         model = nn.DataParallel(model)
 
-    # Loss
+    # Loss — supports focal_dice, dice_bce, dice, focal, bce
     criterion = build_criterion(cfg).to(device)
 
-    # Optimizer (different LR for backbone vs. decode head)
+    # Optimizer (differential LR: backbone vs. decode head)
     backbone_params = []
     head_params = []
     for name, param in model.named_parameters():
@@ -133,7 +143,7 @@ def train(cfg: dict, smoke_test: bool = False):
             backbone_params.append(param)
 
     optimizer = torch.optim.AdamW([
-        {"params": backbone_params, "lr": train_cfg["lr"] * 0.1},  # Lower LR for pretrained backbone
+        {"params": backbone_params, "lr": train_cfg["lr"] * 0.1},
         {"params": head_params, "lr": train_cfg["lr"]},
     ], weight_decay=train_cfg.get("weight_decay", 0.01),
        betas=tuple(train_cfg.get("betas", [0.9, 0.999])))
@@ -176,15 +186,16 @@ def train(cfg: dict, smoke_test: bool = False):
         t0 = time.time()
 
         pbar = tqdm(train_loader, desc=f"Epoch {epoch}/{total_epochs}", leave=False)
-        for batch_idx, batch in enumerate(pbar):
-            images = batch["image"].to(device, non_blocking=True)
-            masks = batch["mask"].to(device, non_blocking=True)
+        for batch_idx, (images, masks) in enumerate(pbar):
+            images = images.to(device, non_blocking=True)
+            masks = masks.to(device, non_blocking=True)
 
             optimizer.zero_grad(set_to_none=True)
 
             with autocast(device_type="cuda", enabled=use_amp):
                 logits = model(images)
-                loss = criterion(logits, masks)
+                binary_logits = to_binary_logits(logits)
+                loss = criterion(binary_logits, masks)
 
             scaler.scale(loss).backward()
 
@@ -197,9 +208,9 @@ def train(cfg: dict, smoke_test: bool = False):
 
             # Training Dice
             with torch.no_grad():
-                probs = torch.softmax(logits, dim=1)
-                preds = (probs[:, 1] > 0.5).long()
-                batch_dice = float(dice_score(preds.view(-1), masks.view(-1)))
+                probs = torch.sigmoid(binary_logits)
+                preds = (probs > 0.5).long()
+                batch_dice = float(dice_score(preds.view(-1), masks.long().view(-1)))
 
             epoch_loss += loss.item()
             epoch_dice += batch_dice

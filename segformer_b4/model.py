@@ -598,6 +598,27 @@ class FocalLoss(nn.Module):
         return focal.mean()
 
 
+class FocalDiceLoss(nn.Module):
+    """Focal Loss + Soft Dice Loss combination for maximum false-positive reduction.
+
+    Focal loss focuses on hard negatives and suppresses easy-negative contribution,
+    while Dice loss optimises the overlap directly — together they tackle both
+    class imbalance and boundary precision.
+    """
+
+    def __init__(self, focal_weight: float = 1.0, dice_weight: float = 1.0,
+                 alpha: float = 0.25, gamma: float = 2.0, smooth: float = 1.0):
+        super().__init__()
+        self.focal_weight = focal_weight
+        self.dice_weight = dice_weight
+        self._focal = FocalLoss(alpha, gamma)
+        self._dice = DiceLoss(smooth)
+
+    def forward(self, logits: torch.Tensor, targets: torch.Tensor) -> torch.Tensor:
+        return (self.focal_weight * self._focal(logits, targets)
+                + self.dice_weight * self._dice(logits, targets))
+
+
 # =============================================================================
 # Builder utilities
 # =============================================================================
@@ -627,6 +648,8 @@ def build_criterion(loss_type: str = "dice_bce", pos_weight: float = 5.0) -> nn.
         return DiceLoss()
     elif loss_type == "focal":
         return FocalLoss()
+    elif loss_type == "focal_dice":
+        return FocalDiceLoss()
     elif loss_type == "ce":
         return nn.CrossEntropyLoss(weight=torch.tensor([1.0, pos_weight]))
     raise ValueError(f"Unknown loss: {loss_type}")

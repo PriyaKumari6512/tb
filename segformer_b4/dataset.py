@@ -1,6 +1,8 @@
 """
 Dataset & data loading for TB bacilli segmentation with SegFormer B4.
 Supports DDS3-style IMAGE/MASK subfolder layout.
+Includes heavy data augmentation to improve real-world generalization
+and reduce false positives on negative images.
 """
 
 import os
@@ -58,14 +60,58 @@ def collect_image_mask_pairs(
 
 
 def get_train_transforms(image_size: int = 512) -> A.Compose:
+    """Heavy augmentation pipeline to improve generalization on real-world data.
+
+    Includes spatial, colour, noise/blur, morphological and dropout augmentations
+    to replicate real-world microscopy image variations and reduce false positives.
+    """
     return A.Compose([
-        A.RandomResizedCrop(height=image_size, width=image_size, scale=(0.5, 1.0)),
+        # --- Spatial ---
+        A.RandomResizedCrop(
+            size=(image_size, image_size),
+            scale=(0.4, 1.0),
+            ratio=(0.75, 1.333),
+            interpolation=cv2.INTER_LINEAR,
+        ),
         A.HorizontalFlip(p=0.5),
         A.VerticalFlip(p=0.5),
         A.RandomRotate90(p=0.5),
-        A.ColorJitter(brightness=0.2, contrast=0.2, saturation=0.15, hue=0.05, p=0.5),
-        A.GaussNoise(var_limit=(10, 50), p=0.3),
-        A.GaussianBlur(blur_limit=3, p=0.2),
+        A.Rotate(limit=30, interpolation=cv2.INTER_LINEAR,
+                 border_mode=cv2.BORDER_REFLECT_101, p=0.4),
+        A.Perspective(scale=(0.02, 0.06), p=0.3),
+        A.ElasticTransform(alpha=60, sigma=6, p=0.3),
+
+        # --- Colour / intensity ---
+        A.OneOf([
+            A.ColorJitter(brightness=0.3, contrast=0.3, saturation=0.2, hue=0.08, p=1.0),
+            A.RandomBrightnessContrast(brightness_limit=0.25, contrast_limit=0.25, p=1.0),
+        ], p=0.6),
+        A.CLAHE(clip_limit=4.0, tile_grid_size=(8, 8), p=0.3),
+        A.HueSaturationValue(hue_shift_limit=10, sat_shift_limit=20, val_shift_limit=20, p=0.3),
+        A.ChannelShuffle(p=0.1),
+
+        # --- Noise / blur ---
+        A.OneOf([
+            A.GaussNoise(std_range=(0.04, 0.12), p=1.0),
+            A.ISONoise(color_shift=(0.01, 0.05), intensity=(0.1, 0.5), p=1.0),
+            A.MultiplicativeNoise(multiplier=(0.85, 1.15), per_channel=True, p=1.0),
+        ], p=0.5),
+        A.OneOf([
+            A.GaussianBlur(blur_limit=(3, 7), p=1.0),
+            A.MedianBlur(blur_limit=5, p=1.0),
+            A.Defocus(radius=(1, 3), p=1.0),
+        ], p=0.35),
+        A.ImageCompression(quality_range=(60, 95), p=0.2),
+
+        # --- Dropout / occlusion ---
+        A.CoarseDropout(
+            num_holes_range=(1, 6),
+            hole_height_range=(8, 32),
+            hole_width_range=(8, 32),
+            fill=0, p=0.2,
+        ),
+
+        # --- Normalize & convert ---
         A.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
         ToTensorV2(),
     ])

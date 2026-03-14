@@ -21,7 +21,12 @@ import cv2
 import numpy as np
 import torch
 import yaml
-from skimage.metrics import peak_signal_noise_ratio, structural_similarity
+try:
+    from skimage.metrics import peak_signal_noise_ratio as _sk_psnr
+    from skimage.metrics import structural_similarity as _sk_ssim
+    _HAS_SKIMAGE = True
+except ImportError:
+    _HAS_SKIMAGE = False
 
 logger = logging.getLogger(__name__)
 
@@ -116,20 +121,47 @@ def compute_psnr(sr: np.ndarray, hr: np.ndarray, crop_border: int = 4) -> float:
     """PSNR on Y channel with border cropping."""
     y_sr = rgb_to_y(sr)
     y_hr = rgb_to_y(hr)
-    if crop_border > 0:
+    if crop_border > 0 and y_sr.shape[0] > 2 * crop_border and y_sr.shape[1] > 2 * crop_border:
         y_sr = y_sr[crop_border:-crop_border, crop_border:-crop_border]
         y_hr = y_hr[crop_border:-crop_border, crop_border:-crop_border]
-    return float(peak_signal_noise_ratio(y_hr, y_sr, data_range=235.0))
+
+    if _HAS_SKIMAGE:
+        return float(_sk_psnr(y_hr, y_sr, data_range=235.0))
+
+    # cv2-based fallback
+    mse = float(np.mean((y_hr.astype(np.float64) - y_sr.astype(np.float64)) ** 2))
+    if mse == 0:
+        return float("inf")
+    return float(10.0 * np.log10((235.0 ** 2) / mse))
 
 
 def compute_ssim(sr: np.ndarray, hr: np.ndarray, crop_border: int = 4) -> float:
     """SSIM on Y channel with border cropping."""
     y_sr = rgb_to_y(sr)
     y_hr = rgb_to_y(hr)
-    if crop_border > 0:
+    if crop_border > 0 and y_sr.shape[0] > 2 * crop_border and y_sr.shape[1] > 2 * crop_border:
         y_sr = y_sr[crop_border:-crop_border, crop_border:-crop_border]
         y_hr = y_hr[crop_border:-crop_border, crop_border:-crop_border]
-    return float(structural_similarity(y_hr, y_sr, data_range=235.0))
+
+    if _HAS_SKIMAGE:
+        return float(_sk_ssim(y_hr, y_sr, data_range=235.0))
+
+    # cv2-based fallback: simplified SSIM
+    y_sr_f = y_sr.astype(np.float64)
+    y_hr_f = y_hr.astype(np.float64)
+    c1 = (0.01 * 235.0) ** 2
+    c2 = (0.03 * 235.0) ** 2
+    mu1 = cv2.GaussianBlur(y_sr_f, (11, 11), 1.5)
+    mu2 = cv2.GaussianBlur(y_hr_f, (11, 11), 1.5)
+    mu1_sq = mu1 ** 2
+    mu2_sq = mu2 ** 2
+    mu1_mu2 = mu1 * mu2
+    sigma1_sq = cv2.GaussianBlur(y_sr_f ** 2, (11, 11), 1.5) - mu1_sq
+    sigma2_sq = cv2.GaussianBlur(y_hr_f ** 2, (11, 11), 1.5) - mu2_sq
+    sigma12 = cv2.GaussianBlur(y_sr_f * y_hr_f, (11, 11), 1.5) - mu1_mu2
+    ssim_map = ((2 * mu1_mu2 + c1) * (2 * sigma12 + c2)) / (
+        (mu1_sq + mu2_sq + c1) * (sigma1_sq + sigma2_sq + c2))
+    return float(ssim_map.mean())
 
 
 # =============================================================================

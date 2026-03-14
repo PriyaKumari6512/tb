@@ -4,7 +4,7 @@ Uses HuggingFace transformers SegformerForSemanticSegmentation with MIT backbone
 """
 
 import logging
-from typing import Dict, Optional
+from typing import Optional
 
 import torch
 import torch.nn as nn
@@ -28,9 +28,11 @@ class TBSegFormer(nn.Module):
         backbone: str = "nvidia/mit-b4",
         num_classes: int = 2,
         pretrained: bool = True,
+        image_size: Optional[int] = None,
     ):
         super().__init__()
         self.num_classes = num_classes
+        self.image_size = image_size
 
         if pretrained:
             # Load pretrained and replace classification head
@@ -67,14 +69,17 @@ class TBSegFormer(nn.Module):
         return logits
 
     def predict(self, pixel_values: torch.Tensor, threshold: float = 0.5) -> torch.Tensor:
-        """Return binary mask prediction."""
+        """Return probability map for positive (bacilli) class.
+
+        Returns:
+            probs: (B, 1, H, W) float32 in [0, 1]
+        """
         logits = self.forward(pixel_values)
         if self.num_classes == 2:
-            probs = torch.softmax(logits, dim=1)
-            mask = (probs[:, 1] > threshold).long()
+            probs = torch.softmax(logits, dim=1)[:, 1:2]  # (B, 1, H, W)
         else:
-            mask = logits.argmax(dim=1)
-        return mask
+            probs = torch.sigmoid(logits[:, 1:2])  # (B, 1, H, W)
+        return probs.float()
 
 
 # =============================================================================
@@ -82,25 +87,29 @@ class TBSegFormer(nn.Module):
 # =============================================================================
 
 class DiceLoss(nn.Module):
-    """Soft Dice loss for binary segmentation."""
+    """Soft Dice loss for binary segmentation with sigmoid inputs.
+
+    Accepts logits of shape (B, 1, H, W) and float binary targets (B, 1, H, W).
+    """
 
     def __init__(self, smooth: float = 1.0):
         super().__init__()
         self.smooth = smooth
 
     def forward(self, logits: torch.Tensor, targets: torch.Tensor) -> torch.Tensor:
-        probs = torch.softmax(logits, dim=1)[:, 1]  # Bacilli class probability
-        targets_f = targets.float()
+        probs = torch.sigmoid(logits)
+        probs_f = probs.view(probs.shape[0], -1)
+        targets_f = targets.float().view(targets.shape[0], -1)
 
-        intersection = (probs * targets_f).sum(dim=(1, 2))
-        union = probs.sum(dim=(1, 2)) + targets_f.sum(dim=(1, 2))
+        intersection = (probs_f * targets_f).sum(dim=1)
+        union = probs_f.sum(dim=1) + targets_f.sum(dim=1)
 
         dice = (2.0 * intersection + self.smooth) / (union + self.smooth)
         return 1.0 - dice.mean()
 
 
 class DiceBCELoss(nn.Module):
-    """Combined Dice + weighted BCE loss."""
+    """Combined Dice + weighted BCE loss for binary sigmoid inputs."""
 
     def __init__(self, dice_weight: float = 1.0, bce_weight: float = 0.5,
                  pos_weight: float = 5.0, smooth: float = 1.0):
@@ -108,18 +117,22 @@ class DiceBCELoss(nn.Module):
         self.dice_weight = dice_weight
         self.bce_weight = bce_weight
         self.dice_loss = DiceLoss(smooth)
-        self.ce_loss = nn.CrossEntropyLoss(
-            weight=torch.tensor([1.0, pos_weight]),
-        )
+        self.register_buffer("pos_weight", torch.tensor([pos_weight]))
 
     def forward(self, logits: torch.Tensor, targets: torch.Tensor) -> torch.Tensor:
         dice = self.dice_loss(logits, targets)
-        ce = self.ce_loss(logits, targets)
-        return self.dice_weight * dice + self.bce_weight * ce
+        bce = F.binary_cross_entropy_with_logits(
+            logits, targets.float(), pos_weight=self.pos_weight
+        )
+        return self.dice_weight * dice + self.bce_weight * bce
 
 
 class FocalLoss(nn.Module):
-    """Focal loss for handling class imbalance."""
+    """Focal loss for class imbalance — binary sigmoid variant.
+
+    Accepts logits (B, 1, H, W) and float binary targets (B, 1, H, W).
+    alpha < 0.5 down-weights the positive class to suppress false positives.
+    """
 
     def __init__(self, alpha: float = 0.25, gamma: float = 2.0):
         super().__init__()
@@ -127,10 +140,28 @@ class FocalLoss(nn.Module):
         self.gamma = gamma
 
     def forward(self, logits: torch.Tensor, targets: torch.Tensor) -> torch.Tensor:
-        ce = F.cross_entropy(logits, targets, reduction="none")
-        pt = torch.exp(-ce)
-        focal = self.alpha * (1 - pt) ** self.gamma * ce
+        targets_f = targets.float()
+        bce = F.binary_cross_entropy_with_logits(logits, targets_f, reduction="none")
+        pt = torch.exp(-bce)
+        alpha_t = self.alpha * targets_f + (1 - self.alpha) * (1 - targets_f)
+        focal = alpha_t * (1 - pt) ** self.gamma * bce
         return focal.mean()
+
+
+class FocalDiceLoss(nn.Module):
+    """Focal Loss + Soft Dice combination for maximum false-positive reduction."""
+
+    def __init__(self, focal_weight: float = 1.0, dice_weight: float = 1.0,
+                 alpha: float = 0.25, gamma: float = 2.0, smooth: float = 1.0):
+        super().__init__()
+        self.focal_weight = focal_weight
+        self.dice_weight = dice_weight
+        self._focal = FocalLoss(alpha, gamma)
+        self._dice = DiceLoss(smooth)
+
+    def forward(self, logits: torch.Tensor, targets: torch.Tensor) -> torch.Tensor:
+        return (self.focal_weight * self._focal(logits, targets)
+                + self.dice_weight * self._dice(logits, targets))
 
 
 def build_criterion(cfg: dict) -> nn.Module:
@@ -138,7 +169,15 @@ def build_criterion(cfg: dict) -> nn.Module:
     loss_cfg = cfg["training"]["loss"]
     loss_type = loss_cfg["type"]
 
-    if loss_type == "dice_bce":
+    if loss_type == "focal_dice":
+        criterion = FocalDiceLoss(
+            focal_weight=loss_cfg.get("focal_weight", 1.0),
+            dice_weight=loss_cfg.get("dice_weight", 1.0),
+            alpha=loss_cfg.get("alpha", 0.25),
+            gamma=loss_cfg.get("gamma", 2.0),
+            smooth=loss_cfg.get("smooth", 1.0),
+        )
+    elif loss_type == "dice_bce":
         criterion = DiceBCELoss(
             dice_weight=loss_cfg.get("dice_weight", 1.0),
             bce_weight=loss_cfg.get("bce_weight", 0.5),
@@ -148,11 +187,13 @@ def build_criterion(cfg: dict) -> nn.Module:
     elif loss_type == "dice":
         criterion = DiceLoss(smooth=loss_cfg.get("smooth", 1.0))
     elif loss_type == "focal":
-        criterion = FocalLoss()
-    elif loss_type == "bce":
-        criterion = nn.CrossEntropyLoss(
-            weight=torch.tensor([1.0, loss_cfg.get("pos_weight", 5.0)])
+        criterion = FocalLoss(
+            alpha=loss_cfg.get("alpha", 0.25),
+            gamma=loss_cfg.get("gamma", 2.0),
         )
+    elif loss_type == "bce":
+        pos_w = loss_cfg.get("pos_weight", 5.0)
+        criterion = nn.BCEWithLogitsLoss(pos_weight=torch.tensor([pos_w]))
     else:
         raise ValueError(f"Unknown loss type: {loss_type}")
 
@@ -167,6 +208,7 @@ def build_model(cfg: dict) -> TBSegFormer:
         backbone=mcfg["backbone"],
         num_classes=mcfg.get("num_classes", 2),
         pretrained=mcfg.get("pretrained", True),
+        image_size=mcfg.get("image_size", None),
     )
     n_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
     logger.info(f"SegFormer model — {n_params / 1e6:.2f}M trainable parameters")
@@ -179,6 +221,6 @@ if __name__ == "__main__":
     x = torch.randn(2, 3, 512, 512)
     logits = model(x)
     assert logits.shape == (2, 2, 512, 512), f"Shape mismatch: {logits.shape}"
-    mask = model.predict(x)
-    assert mask.shape == (2, 512, 512), f"Mask shape: {mask.shape}"
-    print(f"✓ Forward pass OK — input {x.shape} → logits {logits.shape} → mask {mask.shape}")
+    probs = model.predict(x)
+    assert probs.shape == (2, 1, 512, 512), f"Mask shape: {probs.shape}"
+    print(f"✓ Forward pass OK — input {x.shape} → logits {logits.shape} → probs {probs.shape}")
