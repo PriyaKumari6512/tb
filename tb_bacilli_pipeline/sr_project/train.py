@@ -116,8 +116,8 @@ def validate(model, val_loader, device):
     psnr_list, ssim_list = [], []
 
     for batch in val_loader:
-        lr = batch["lr"].to(device)
-        hr = batch["hr"]
+        lr, hr = batch
+        lr = lr.to(device)
 
         with autocast(device_type="cuda", enabled=device.type == "cuda"):
             sr = model(lr)
@@ -157,7 +157,7 @@ def train(cfg: dict, smoke_test: bool = False):
         yaml.dump(cfg, f, default_flow_style=False)
 
     # Data
-    train_loader, val_loader, _ = build_dataloaders(cfg)
+    train_loader, val_loader = build_dataloaders(cfg)
 
     # Model
     model = build_model(cfg)

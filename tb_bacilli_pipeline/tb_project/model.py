@@ -4,6 +4,7 @@ Uses HuggingFace transformers SegformerForSemanticSegmentation with MIT backbone
 """
 
 import logging
+import os
 from typing import Optional
 
 import torch
@@ -13,6 +14,38 @@ from transformers import SegformerForSemanticSegmentation, SegformerConfig
 
 logger = logging.getLogger(__name__)
 
+# ---------------------------------------------------------------------------
+# Hard-coded backbone configs for offline use (no internet required when
+# pretrained=False).  Values are taken from the official HuggingFace model
+# cards for the nvidia/mit-b* family.
+# ---------------------------------------------------------------------------
+_BACKBONE_OFFLINE_CONFIGS = {
+    "nvidia/mit-b0": dict(
+        hidden_sizes=[32, 64, 160, 256], depths=[2, 2, 2, 2],
+        num_attention_heads=[1, 2, 5, 8], mlp_ratios=[4, 4, 4, 4],
+    ),
+    "nvidia/mit-b1": dict(
+        hidden_sizes=[64, 128, 320, 512], depths=[2, 2, 2, 2],
+        num_attention_heads=[1, 2, 5, 8], mlp_ratios=[4, 4, 4, 4],
+    ),
+    "nvidia/mit-b2": dict(
+        hidden_sizes=[64, 128, 320, 512], depths=[3, 4, 6, 3],
+        num_attention_heads=[1, 2, 5, 8], mlp_ratios=[4, 4, 4, 4],
+    ),
+    "nvidia/mit-b3": dict(
+        hidden_sizes=[64, 128, 320, 512], depths=[3, 4, 18, 3],
+        num_attention_heads=[1, 2, 5, 8], mlp_ratios=[4, 4, 4, 4],
+    ),
+    "nvidia/mit-b4": dict(
+        hidden_sizes=[64, 128, 320, 512], depths=[3, 8, 27, 3],
+        num_attention_heads=[1, 2, 5, 8], mlp_ratios=[4, 4, 4, 4],
+    ),
+    "nvidia/mit-b5": dict(
+        hidden_sizes=[64, 128, 320, 512], depths=[3, 6, 40, 3],
+        num_attention_heads=[1, 2, 5, 8], mlp_ratios=[4, 4, 4, 4],
+    ),
+}
+
 
 class TBSegFormer(nn.Module):
     """SegFormer wrapper for binary TB bacilli segmentation.
@@ -21,6 +54,8 @@ class TBSegFormer(nn.Module):
     - HuggingFace pretrained backbones (MIT-B0 through B5)
     - Custom num_classes (default: 2 for background + bacilli)
     - Automatic logit upsampling to input resolution
+    - Offline initialization via ``pretrained=False`` (no internet required)
+    - Loading local pretrained weights via ``local_pretrained_path``
     """
 
     def __init__(
@@ -29,13 +64,14 @@ class TBSegFormer(nn.Module):
         num_classes: int = 2,
         pretrained: bool = True,
         image_size: Optional[int] = None,
+        local_pretrained_path: Optional[str] = None,
     ):
         super().__init__()
         self.num_classes = num_classes
         self.image_size = image_size
 
-        if pretrained:
-            # Load pretrained and replace classification head
+        if pretrained and local_pretrained_path is None:
+            # Load pretrained backbone from HuggingFace (requires internet)
             logger.info(f"Loading pretrained SegFormer backbone: {backbone}")
             self.model = SegformerForSemanticSegmentation.from_pretrained(
                 backbone,
@@ -43,11 +79,70 @@ class TBSegFormer(nn.Module):
                 ignore_mismatched_sizes=True,
             )
         else:
-            config = SegformerConfig.from_pretrained(backbone)
-            config.num_labels = num_classes
+            # Offline construction — use hard-coded configs for known backbones
+            if backbone in _BACKBONE_OFFLINE_CONFIGS:
+                bcfg = _BACKBONE_OFFLINE_CONFIGS[backbone]
+                config = SegformerConfig(
+                    num_encoder_blocks=4,
+                    hidden_sizes=bcfg["hidden_sizes"],
+                    depths=bcfg["depths"],
+                    num_attention_heads=bcfg["num_attention_heads"],
+                    mlp_ratios=bcfg["mlp_ratios"],
+                    num_labels=num_classes,
+                )
+            else:
+                # Unknown backbone — attempt to load config from HuggingFace or
+                # local directory; fall back gracefully.
+                logger.warning(
+                    f"Unknown backbone '{backbone}' for offline init — "
+                    "attempting SegformerConfig.from_pretrained()"
+                )
+                config = SegformerConfig.from_pretrained(backbone)
+                config.num_labels = num_classes
             self.model = SegformerForSemanticSegmentation(config)
 
+        # Optionally load weights from a local checkpoint
+        if local_pretrained_path is not None:
+            self._load_local_weights(local_pretrained_path)
+
         logger.info(f"SegFormer built — backbone: {backbone}, num_classes: {num_classes}")
+
+    def _load_local_weights(self, path: str) -> None:
+        """Load model weights from a local checkpoint file.
+
+        Accepts checkpoints saved by :func:`save_checkpoint` (which wrap the
+        state dict under ``"model_state_dict"``) as well as plain state dicts.
+
+        .. warning::
+            Only load checkpoints from trusted sources.  ``torch.load`` with
+            ``weights_only=False`` uses Python ``pickle`` internally and can
+            execute arbitrary code if the file is malicious.
+
+        Args:
+            path: Path to the ``.pth`` checkpoint file.
+        """
+        if not os.path.isfile(path):
+            raise FileNotFoundError(f"Local pretrained checkpoint not found: {path}")
+
+        ckpt = torch.load(path, map_location="cpu", weights_only=False)
+
+        # Unwrap common wrapper keys
+        for key in ("model_state_dict", "state_dict", "model"):
+            if isinstance(ckpt, dict) and key in ckpt:
+                ckpt = ckpt[key]
+                break
+
+        # Strip DataParallel prefix
+        if any(k.startswith("module.") for k in ckpt):
+            ckpt = {k.replace("module.", "", 1): v for k, v in ckpt.items()}
+
+        missing, unexpected = self.load_state_dict(ckpt, strict=False)
+        loaded = len(ckpt) - len(unexpected)
+        logger.info(
+            f"Loaded local pretrained weights from '{path}' — "
+            f"{loaded}/{len(ckpt)} keys loaded, "
+            f"{len(missing)} missing, {len(unexpected)} unexpected"
+        )
 
     def forward(self, pixel_values: torch.Tensor) -> torch.Tensor:
         """
@@ -202,13 +297,23 @@ def build_criterion(cfg: dict) -> nn.Module:
 
 
 def build_model(cfg: dict) -> TBSegFormer:
-    """Build SegFormer model from config."""
+    """Build SegFormer model from config.
+
+    Config keys (under ``cfg["model"]``):
+      - ``backbone``: HuggingFace model ID (e.g. ``"nvidia/mit-b4"``)
+      - ``num_classes``: number of output classes (default 2)
+      - ``pretrained``: load pretrained HuggingFace backbone (default True)
+      - ``image_size``: expected input size (optional)
+      - ``local_pretrained_path``: path to a local ``.pth`` checkpoint to load
+        instead of downloading from HuggingFace (optional)
+    """
     mcfg = cfg["model"]
     model = TBSegFormer(
         backbone=mcfg["backbone"],
         num_classes=mcfg.get("num_classes", 2),
         pretrained=mcfg.get("pretrained", True),
         image_size=mcfg.get("image_size", None),
+        local_pretrained_path=mcfg.get("local_pretrained_path", None),
     )
     n_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
     logger.info(f"SegFormer model — {n_params / 1e6:.2f}M trainable parameters")

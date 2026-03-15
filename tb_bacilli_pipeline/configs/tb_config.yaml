@@ -23,6 +23,7 @@ model:
   backbone: "nvidia/mit-b4"
   num_classes: 2             # background + bacilli
   pretrained: true
+  local_pretrained_path: null  # path to a local .pth checkpoint (overrides HuggingFace download)
 
 training:
   epochs: 100

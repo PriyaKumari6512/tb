@@ -25,6 +25,7 @@ model:
   img_channels: 3
   resi_connection: "1conv"   # "1conv" or "3conv"
   upsampler: "pixelshuffle"
+  pretrained_weights: null   # path to a local SwinIR .pth checkpoint, or null
 
 training:
   epochs: 200

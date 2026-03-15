@@ -13,6 +13,7 @@ Each RSTB (Residual Swin Transformer Block):
 STL uses window-based multi-head self-attention with shifted windows.
 """
 
+import logging
 import math
 from typing import List, Optional
 
@@ -20,6 +21,8 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from einops import rearrange
+
+logger = logging.getLogger(__name__)
 
 
 # =============================================================================
@@ -310,6 +313,9 @@ class SwinIR(nn.Module):
 
     Args:
         img_channels: Number of input/output image channels (3 for RGB).
+            Alias ``in_chans`` is also accepted for compatibility.
+        img_size: Ignored (kept for API compatibility); spatial padding is
+            handled dynamically at forward time.
         embed_dim: Embedding dimension.
         depths: Number of STL layers in each RSTB.
         num_heads: Number of attention heads in each RSTB.
@@ -322,6 +328,7 @@ class SwinIR(nn.Module):
     def __init__(
         self,
         img_channels: int = 3,
+        img_size: Optional[int] = None,   # accepted but unused — padding is dynamic
         embed_dim: int = 180,
         depths: List[int] = [6, 6, 6, 6, 6, 6, 6, 6],
         num_heads: List[int] = [6, 6, 6, 6, 6, 6, 6, 6],
@@ -329,8 +336,13 @@ class SwinIR(nn.Module):
         mlp_ratio: float = 2.0,
         upscale: int = 4,
         resi_connection: str = "1conv",
+        # Legacy / alternative parameter names
+        in_chans: Optional[int] = None,
     ):
         super().__init__()
+        # Support ``in_chans`` as an alias for ``img_channels``
+        if in_chans is not None:
+            img_channels = in_chans
         self.window_size = window_size
         self.upscale = upscale
 
@@ -371,6 +383,51 @@ class SwinIR(nn.Module):
             if m.bias is not None:
                 nn.init.constant_(m.bias, 0)
 
+    def load_pretrained(self, path: str, strict: bool = False) -> None:
+        """Load pretrained weights from a local ``.pth`` / ``.pt`` file.
+
+        The checkpoint may be:
+        - A plain ``state_dict`` mapping
+        - A training checkpoint with a ``"model_state_dict"`` or
+          ``"state_dict"`` key (as saved by :func:`save_checkpoint`)
+        - A checkpoint with a ``"params_ema"`` key (SwinIR official release)
+
+        .. warning::
+            Only load checkpoints from trusted sources.  ``torch.load`` with
+            ``weights_only=False`` uses Python ``pickle`` internally and can
+            execute arbitrary code if the file is malicious.
+
+        Args:
+            path: Path to the checkpoint file.
+            strict: Whether to require an exact key match.  Defaults to
+                ``False`` so that partially-matching checkpoints (e.g. a
+                6-block pretrained model loaded into an 8-block model) still
+                load the overlapping weights.
+        """
+        import os
+        if not os.path.isfile(path):
+            raise FileNotFoundError(f"Pretrained checkpoint not found: {path}")
+
+        ckpt = torch.load(path, map_location="cpu", weights_only=False)
+
+        # Unwrap common checkpoint wrapper keys
+        for key in ("params_ema", "model_state_dict", "state_dict", "model"):
+            if isinstance(ckpt, dict) and key in ckpt:
+                ckpt = ckpt[key]
+                break
+
+        # Strip DataParallel "module." prefix if present
+        if any(k.startswith("module.") for k in ckpt):
+            ckpt = {k.replace("module.", "", 1): v for k, v in ckpt.items()}
+
+        missing, unexpected = self.load_state_dict(ckpt, strict=strict)
+        loaded = len(ckpt) - len(unexpected)
+        logger.info(
+            "[SwinIR] Loaded pretrained weights from '%s' — "
+            "%d/%d keys loaded, %d missing, %d unexpected",
+            path, loaded, len(ckpt), len(missing), len(unexpected),
+        )
+
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         B, C, H, W = x.shape
 
@@ -403,10 +460,15 @@ class SwinIR(nn.Module):
 
 
 def build_model(cfg: dict) -> SwinIR:
-    """Build SwinIR model from config."""
+    """Build SwinIR model from config.
+
+    If ``cfg["model"]["pretrained_weights"]`` is set to a file path the
+    pretrained weights are loaded with :meth:`SwinIR.load_pretrained` after
+    the model is constructed (using ``strict=False`` to allow partial matches).
+    """
     mcfg = cfg["model"]
     model = SwinIR(
-        img_channels=mcfg.get("img_channels", 3),
+        img_channels=mcfg.get("img_channels", mcfg.get("in_chans", 3)),
         embed_dim=mcfg["embed_dim"],
         depths=mcfg["depths"],
         num_heads=mcfg["num_heads"],
@@ -417,6 +479,11 @@ def build_model(cfg: dict) -> SwinIR:
     )
     n_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
     print(f"SwinIR model built — {n_params / 1e6:.2f}M trainable parameters")
+
+    pretrained_weights = mcfg.get("pretrained_weights", None)
+    if pretrained_weights:
+        model.load_pretrained(pretrained_weights, strict=False)
+
     return model
 
 
