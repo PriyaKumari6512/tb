@@ -92,3 +92,11 @@ def _load_pretrained(self, path: str):
     missing, unexpected = self.encoder.load_state_dict(encoder_state, strict=False)
     loaded = len(encoder_state)
     print(f"[Pretrained] loaded={loaded}, missing={len(missing)}, unexpected={len(unexpected)}")
+
+
+
+
+
+    negative    https://drive.google.com/drive/folders/1BN-3DJvFDuTtW-B89WbocSd3uHqD9aB8?usp=sharing
+
+    positive   https://drive.google.com/drive/folders/1B_7_zBCkgICrrH3PVQ-FjaEKE_wPySUs?usp=sharing
