@@ -28,24 +28,84 @@ class TBSegFormer(nn.Module):
         backbone: str = "nvidia/mit-b4",
         num_classes: int = 2,
         pretrained: bool = True,
+        image_size: Optional[int] = None,
     ):
         super().__init__()
         self.num_classes = num_classes
+        self.image_size = image_size
 
         if pretrained:
             # Load pretrained and replace classification head
             logger.info(f"Loading pretrained SegFormer backbone: {backbone}")
-            self.model = SegformerForSemanticSegmentation.from_pretrained(
-                backbone,
-                num_labels=num_classes,
-                ignore_mismatched_sizes=True,
-            )
+            try:
+                self.model = SegformerForSemanticSegmentation.from_pretrained(
+                    backbone,
+                    num_labels=num_classes,
+                    ignore_mismatched_sizes=True,
+                )
+            except (OSError, RuntimeError) as e:
+                logger.warning(f"Could not load pretrained weights ({e}), "
+                               f"falling back to random initialization")
+                config = self._get_local_config(backbone, num_classes)
+                self.model = SegformerForSemanticSegmentation(config)
         else:
-            config = SegformerConfig.from_pretrained(backbone)
-            config.num_labels = num_classes
+            # Build from local config without network access
+            config = self._get_local_config(backbone, num_classes)
             self.model = SegformerForSemanticSegmentation(config)
 
         logger.info(f"SegFormer built — backbone: {backbone}, num_classes: {num_classes}")
+
+    @staticmethod
+    def _get_local_config(backbone: str, num_classes: int) -> SegformerConfig:
+        """Create SegformerConfig locally without requiring network access.
+
+        Architecture specs from SegFormer paper (Xie et al., NeurIPS 2021, Table 7)
+        and HuggingFace SegformerConfig defaults.
+        """
+        variant_configs = {
+            "nvidia/mit-b0": dict(
+                hidden_sizes=[32, 64, 160, 256], depths=[2, 2, 2, 2],
+                num_attention_heads=[1, 2, 5, 8], decoder_hidden_size=256,
+            ),
+            "nvidia/mit-b1": dict(
+                hidden_sizes=[64, 128, 320, 512], depths=[2, 2, 2, 2],
+                num_attention_heads=[1, 2, 5, 8], decoder_hidden_size=256,
+            ),
+            "nvidia/mit-b2": dict(
+                hidden_sizes=[64, 128, 320, 512], depths=[3, 4, 6, 3],
+                num_attention_heads=[1, 2, 5, 8], decoder_hidden_size=768,
+            ),
+            "nvidia/mit-b3": dict(
+                hidden_sizes=[64, 128, 320, 512], depths=[3, 4, 18, 3],
+                num_attention_heads=[1, 2, 5, 8], decoder_hidden_size=768,
+            ),
+            "nvidia/mit-b4": dict(
+                hidden_sizes=[64, 128, 320, 512], depths=[3, 8, 27, 3],
+                num_attention_heads=[1, 2, 5, 8], decoder_hidden_size=768,
+            ),
+            "nvidia/mit-b5": dict(
+                hidden_sizes=[64, 128, 320, 512], depths=[3, 6, 40, 3],
+                num_attention_heads=[1, 2, 5, 8], decoder_hidden_size=768,
+            ),
+        }
+        if backbone in variant_configs:
+            vcfg = variant_configs[backbone]
+            return SegformerConfig(
+                num_labels=num_classes,
+                hidden_sizes=vcfg["hidden_sizes"],
+                depths=vcfg["depths"],
+                num_attention_heads=vcfg["num_attention_heads"],
+                decoder_hidden_size=vcfg["decoder_hidden_size"],
+            )
+        # Fallback: try loading from pretrained (requires network)
+        try:
+            config = SegformerConfig.from_pretrained(backbone)
+            config.num_labels = num_classes
+            return config
+        except Exception:
+            raise ValueError(
+                f"Unknown backbone '{backbone}'. Use one of: {list(variant_configs.keys())}"
+            )
 
     def forward(self, pixel_values: torch.Tensor) -> torch.Tensor:
         """
@@ -67,14 +127,17 @@ class TBSegFormer(nn.Module):
         return logits
 
     def predict(self, pixel_values: torch.Tensor, threshold: float = 0.5) -> torch.Tensor:
-        """Return binary mask prediction."""
+        """Return probability map for the bacilli class.
+
+        Returns:
+            probs: (B, 1, H, W) float32 tensor with values in [0, 1].
+        """
         logits = self.forward(pixel_values)
         if self.num_classes == 2:
-            probs = torch.softmax(logits, dim=1)
-            mask = (probs[:, 1] > threshold).long()
+            probs = torch.softmax(logits, dim=1)[:, 1:2]
         else:
-            mask = logits.argmax(dim=1)
-        return mask
+            probs = torch.softmax(logits, dim=1).max(dim=1, keepdim=True).values
+        return probs
 
 
 # =============================================================================
@@ -82,25 +145,33 @@ class TBSegFormer(nn.Module):
 # =============================================================================
 
 class DiceLoss(nn.Module):
-    """Soft Dice loss for binary segmentation."""
+    """Soft Dice loss for binary segmentation.
+
+    Accepts single-channel logits (B, 1, H, W) and targets (B, 1, H, W).
+    Applies sigmoid to logits internally.
+    """
 
     def __init__(self, smooth: float = 1.0):
         super().__init__()
         self.smooth = smooth
 
     def forward(self, logits: torch.Tensor, targets: torch.Tensor) -> torch.Tensor:
-        probs = torch.softmax(logits, dim=1)[:, 1]  # Bacilli class probability
-        targets_f = targets.float()
+        probs = torch.sigmoid(logits)
+        probs_flat = probs.view(probs.size(0), -1)
+        targets_flat = targets.float().view(targets.size(0), -1)
 
-        intersection = (probs * targets_f).sum(dim=(1, 2))
-        union = probs.sum(dim=(1, 2)) + targets_f.sum(dim=(1, 2))
+        intersection = (probs_flat * targets_flat).sum(dim=1)
+        union = probs_flat.sum(dim=1) + targets_flat.sum(dim=1)
 
         dice = (2.0 * intersection + self.smooth) / (union + self.smooth)
         return 1.0 - dice.mean()
 
 
 class DiceBCELoss(nn.Module):
-    """Combined Dice + weighted BCE loss."""
+    """Combined Dice + weighted BCE loss for binary segmentation.
+
+    Accepts single-channel logits (B, 1, H, W) and targets (B, 1, H, W).
+    """
 
     def __init__(self, dice_weight: float = 1.0, bce_weight: float = 0.5,
                  pos_weight: float = 5.0, smooth: float = 1.0):
@@ -108,18 +179,21 @@ class DiceBCELoss(nn.Module):
         self.dice_weight = dice_weight
         self.bce_weight = bce_weight
         self.dice_loss = DiceLoss(smooth)
-        self.ce_loss = nn.CrossEntropyLoss(
-            weight=torch.tensor([1.0, pos_weight]),
+        self.bce_loss = nn.BCEWithLogitsLoss(
+            pos_weight=torch.tensor([pos_weight]),
         )
 
     def forward(self, logits: torch.Tensor, targets: torch.Tensor) -> torch.Tensor:
         dice = self.dice_loss(logits, targets)
-        ce = self.ce_loss(logits, targets)
-        return self.dice_weight * dice + self.bce_weight * ce
+        bce = self.bce_loss(logits, targets.float())
+        return self.dice_weight * dice + self.bce_weight * bce
 
 
 class FocalLoss(nn.Module):
-    """Focal loss for handling class imbalance."""
+    """Binary Focal loss for handling class imbalance.
+
+    Accepts single-channel logits (B, 1, H, W) and targets (B, 1, H, W).
+    """
 
     def __init__(self, alpha: float = 0.25, gamma: float = 2.0):
         super().__init__()
@@ -127,9 +201,9 @@ class FocalLoss(nn.Module):
         self.gamma = gamma
 
     def forward(self, logits: torch.Tensor, targets: torch.Tensor) -> torch.Tensor:
-        ce = F.cross_entropy(logits, targets, reduction="none")
-        pt = torch.exp(-ce)
-        focal = self.alpha * (1 - pt) ** self.gamma * ce
+        bce = F.binary_cross_entropy_with_logits(logits, targets.float(), reduction="none")
+        pt = torch.exp(-bce)
+        focal = self.alpha * (1 - pt) ** self.gamma * bce
         return focal.mean()
 
 
@@ -150,8 +224,8 @@ def build_criterion(cfg: dict) -> nn.Module:
     elif loss_type == "focal":
         criterion = FocalLoss()
     elif loss_type == "bce":
-        criterion = nn.CrossEntropyLoss(
-            weight=torch.tensor([1.0, loss_cfg.get("pos_weight", 5.0)])
+        criterion = nn.BCEWithLogitsLoss(
+            pos_weight=torch.tensor([loss_cfg.get("pos_weight", 5.0)])
         )
     else:
         raise ValueError(f"Unknown loss type: {loss_type}")
@@ -167,6 +241,7 @@ def build_model(cfg: dict) -> TBSegFormer:
         backbone=mcfg["backbone"],
         num_classes=mcfg.get("num_classes", 2),
         pretrained=mcfg.get("pretrained", True),
+        image_size=cfg.get("data", {}).get("image_size"),
     )
     n_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
     logger.info(f"SegFormer model — {n_params / 1e6:.2f}M trainable parameters")
@@ -180,5 +255,6 @@ if __name__ == "__main__":
     logits = model(x)
     assert logits.shape == (2, 2, 512, 512), f"Shape mismatch: {logits.shape}"
     mask = model.predict(x)
-    assert mask.shape == (2, 512, 512), f"Mask shape: {mask.shape}"
+    assert mask.shape == (2, 1, 512, 512), f"Mask shape: {mask.shape}"
+    assert mask.dtype == torch.float32, f"Mask dtype: {mask.dtype}"
     print(f"✓ Forward pass OK — input {x.shape} → logits {logits.shape} → mask {mask.shape}")

@@ -39,6 +39,15 @@ from sr_project.utils import (
 
 logger = logging.getLogger(__name__)
 
+# Layer names for the reconstruction head (not pretrained).
+# All other parameters belong to the pretrained encoder body.
+_HEAD_LAYER_NAMES = ("upsample", "conv_last")
+
+
+def _is_head_param(name: str) -> bool:
+    """Return True if parameter name belongs to the reconstruction head."""
+    return any(n in name for n in _HEAD_LAYER_NAMES)
+
 
 # =============================================================================
 # Perceptual Loss (VGG-based)
@@ -169,12 +178,31 @@ def train(cfg: dict, smoke_test: bool = False):
         model = nn.DataParallel(model)
 
     # Optimizer
-    optimizer = torch.optim.AdamW(
-        model.parameters(),
-        lr=train_cfg["lr"],
-        weight_decay=train_cfg.get("weight_decay", 0),
-        betas=tuple(train_cfg.get("betas", [0.9, 0.99])),
-    )
+    # Transfer learning: use differential LR if pretrained weights are loaded
+    if cfg["model"].get("pretrained_weights"):
+        # Lower LR for pretrained body (shallow + deep features), full LR for reconstruction head
+        body_params = []
+        head_params = []
+        for name, param in model.named_parameters():
+            if _is_head_param(name):
+                head_params.append(param)
+            else:
+                body_params.append(param)
+        encoder_lr_mult = train_cfg.get("encoder_lr_mult", 0.1)
+        optimizer = torch.optim.AdamW([
+            {"params": body_params, "lr": train_cfg["lr"] * encoder_lr_mult},
+            {"params": head_params, "lr": train_cfg["lr"]},
+        ], weight_decay=train_cfg.get("weight_decay", 0),
+           betas=tuple(train_cfg.get("betas", [0.9, 0.99])))
+        logger.info(f"Transfer learning: body LR={train_cfg['lr'] * encoder_lr_mult:.2e}, "
+                     f"head LR={train_cfg['lr']:.2e}")
+    else:
+        optimizer = torch.optim.AdamW(
+            model.parameters(),
+            lr=train_cfg["lr"],
+            weight_decay=train_cfg.get("weight_decay", 0),
+            betas=tuple(train_cfg.get("betas", [0.9, 0.99])),
+        )
 
     # Scheduler
     total_epochs = 2 if smoke_test else train_cfg["epochs"]
@@ -223,8 +251,24 @@ def train(cfg: dict, smoke_test: bool = False):
     if perceptual_loss_fn:
         logger.info(f"Stage 2 (L1 + perceptual): epochs {stage1_epochs}+")
 
+    # Transfer learning: optional encoder freeze during initial epochs
+    freeze_encoder_epochs = train_cfg.get("freeze_encoder_epochs", 0)
+    if freeze_encoder_epochs > 0:
+        logger.info(f"Freezing encoder (RSTB blocks) for first {freeze_encoder_epochs} epochs")
+
     for epoch in range(start_epoch, total_epochs):
         model.train()
+
+        # Transfer learning: freeze/unfreeze encoder
+        if freeze_encoder_epochs > 0:
+            base_model = model.module if hasattr(model, "module") else model
+            freeze = epoch < freeze_encoder_epochs
+            for name, param in base_model.named_parameters():
+                if not _is_head_param(name):
+                    param.requires_grad = not freeze
+            if epoch == freeze_encoder_epochs:
+                logger.info(f"Epoch {epoch}: unfreezing encoder parameters")
+
         epoch_loss = 0.0
         use_perceptual = perceptual_loss_fn is not None and epoch >= stage1_epochs
         t0 = time.time()

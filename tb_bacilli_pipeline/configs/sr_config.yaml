@@ -28,6 +28,7 @@ model:
   img_channels: 3
   resi_connection: "1conv"   # "1conv" or "3conv"
   upsampler: "pixelshuffle"
+  pretrained_weights: null   # Path to pretrained SwinIR checkpoint for transfer learning
 
 training:
   epochs: 200
@@ -52,6 +53,8 @@ training:
   staged_finetuning:
     stage1_epochs: 30        # L1 only
     stage2_start: 31         # L1 + perceptual
+  encoder_lr_mult: 0.1       # LR multiplier for pretrained encoder (transfer learning)
+  freeze_encoder_epochs: 0   # Freeze encoder for N initial epochs (transfer learning)
 
 checkpoint:
   dir: "${CKPT_DIR:./checkpoints}/sr"
