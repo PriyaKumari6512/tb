@@ -3,25 +3,27 @@
 # =============================================================================
 
 data:
-  root: "${DATA_ROOT:./DDS3}"
+  data_root: "${DATA_ROOT:./DDS3}"
+  train_split: "TRAINING SET"
   train_subfolders:
-    - "TRAINING SET/100% NEGATIVE"
-    - "TRAINING SET/90% NEGATIVE"
-    - "TRAINING SET/50% NEGATIVE"
-  val_subfolder: "VALIDATION SET/50% NEGATIVE"
-  test_subfolder: "TEST SET/50% NEGATIVE"
-  image_dir: "IMAGE"
-  mask_dir: "MASK"
-  extension: ".bmp"
+    - "100% NEGATIVE"
+    - "90% NEGATIVE"
+    - "50% NEGATIVE"
+  val_split: "VALIDATION SET"
+  val_subfolders:
+    - "50% NEGATIVE"
+  # Oversample bacilli-rich images to handle class imbalance
+  subfolder_weights:
+    "100% NEGATIVE": 0.5   # mostly negative — down-weight
+    "90% NEGATIVE": 1.0
+    "50% NEGATIVE": 2.0    # highest bacilli density — up-weight
   image_size: 512
-  batch_size: 8
-  num_workers: 4
-  pin_memory: true
 
 model:
   backbone: "nvidia/mit-b4"
   num_classes: 2             # background + bacilli
   pretrained: true
+  local_pretrained_path: null  # path to a local .pth checkpoint (overrides HuggingFace download)
 
 training:
   epochs: 100
@@ -35,14 +37,17 @@ training:
   amp: true
   clip_grad: 1.0
   multi_gpu: true
+  batch_size: 8
+  num_workers: 4
   save_every: 5
   patience: 20
   seed: 42
   loss:
-    type: "dice_bce"         # "dice_bce", "dice", "bce", "focal"
+    type: "focal_dice"       # focal_dice, dice_bce, dice, bce, focal
+    focal_weight: 1.0
     dice_weight: 1.0
-    bce_weight: 0.5
-    pos_weight: 5.0          # weight for bacilli class (handles imbalance)
+    alpha: 0.25              # focal: down-weight easy positives
+    gamma: 2.0               # focal: focus on hard examples
     smooth: 1.0
 
 checkpoint:
@@ -56,8 +61,8 @@ logging:
 
 postprocess:
   min_area: 10
-  connectivity: 2
-  conf_threshold: 0.5
+  connectivity: 8
+  conf_threshold: 0.5        # increase to reduce false positives
 
 inference:
   output_dir: "${OUTPUT_DIR:./outputs}/tb"

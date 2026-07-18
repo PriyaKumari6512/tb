@@ -3,20 +3,17 @@
 # =============================================================================
 
 data:
-  root: "${DATA_ROOT:./DDS3}"
+  data_root: "${DATA_ROOT:./DDS3}"
+  train_split: "TRAINING SET"
   train_subfolders:
-    - "TRAINING SET/100% NEGATIVE"
-    - "TRAINING SET/90% NEGATIVE"
-    - "TRAINING SET/50% NEGATIVE"
-  val_subfolder: "VALIDATION SET/50% NEGATIVE"
-  test_subfolder: "TEST SET/50% NEGATIVE"
-  image_dir: "IMAGE"
-  extension: ".bmp"
+    - "100% NEGATIVE"
+    - "90% NEGATIVE"
+    - "50% NEGATIVE"
+  val_split: "VALIDATION SET"
+  val_subfolders:
+    - "50% NEGATIVE"
   scale: 4
   patch_size: 64          # HR crop size (LR will be patch_size/scale = 16)
-  batch_size: 16
-  num_workers: 4
-  pin_memory: true
 
 model:
   embed_dim: 180
@@ -28,6 +25,7 @@ model:
   img_channels: 3
   resi_connection: "1conv"   # "1conv" or "3conv"
   upsampler: "pixelshuffle"
+  pretrained_weights: null   # path to a local SwinIR .pth checkpoint, or null
 
 training:
   epochs: 200
@@ -41,6 +39,9 @@ training:
   amp: true
   clip_grad: 1.0
   multi_gpu: true           # auto-detect and use all GPUs
+  batch_size: 16
+  num_workers: 4
+  pin_memory: true
   save_every: 10
   patience: 30
   seed: 42

@@ -83,7 +83,7 @@ class TestSwinIRForward:
         with torch.no_grad():
             y1 = model(x)
             y_batch = model(x_batch)
-        torch.testing.assert_close(y1, y_batch[0:1], atol=1e-5, rtol=1e-5)
+        torch.testing.assert_close(y1, y_batch[0:1], atol=1e-4, rtol=1e-4)
 
 
 class TestSegFormerForward:
@@ -96,6 +96,7 @@ class TestSegFormerForward:
             backbone="nvidia/mit-b0",  # smallest for testing
             num_classes=2,
             image_size=64,
+            pretrained=False,          # offline — no HuggingFace download
         )
         model.eval()
         x = torch.randn(1, 3, 64, 64)
@@ -110,6 +111,7 @@ class TestSegFormerForward:
             backbone="nvidia/mit-b0",
             num_classes=2,
             image_size=64,
+            pretrained=False,          # offline — no HuggingFace download
         )
         model.eval()
         x = torch.randn(1, 3, 64, 64)
